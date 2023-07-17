@@ -1,0 +1,134 @@
+def get_mid_pos(aligned_depth_frame,box):
+    mid_pixel = [(box[0] + box[2])//2, (box[1] + box[3])//2] #确定索引深度的中心像素位置
+    # 注意mid_pixel是float，但是get_distance()的参数需要是int
+    [x, y] = [int(mid_pixel[0]), int(mid_pixel[1])]
+    depth_intrin = aligned_depth_frame.profile.as_video_stream_profile().intrinsics # 获取相机深度参数
+    dis = aligned_depth_frame.get_distance(x, y)        # 获取该像素点对应的深度
+    # print ('depth: ',dis)       # 深度单位是m
+    camera_coordinate = rs.rs2_deproject_pixel_to_point(depth_intrin, [x, y], dis)
+    # print ('camera_coordinate: ',camera_coordinate)
+    return camera_coordinate
+    
+def dectshow(org_img, boxs,aligned_depth_frame):
+    img = org_img.copy()
+    for box in boxs:
+        cv2.rectangle(img, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+        point_3d = dist = get_mid_pos(aligned_depth_frame,box)
+        [x, y, z] = point_3d
+        # cv.putText 图片，添加的文字，左上角坐标，字体，字体大小，颜色，字体粗细
+        cv2.putText(img, box[-1] + ' (' + str(x)[:4] + ',' + str(y)[:4] + ',' + str(z)[:4] + ')',
+                    (int(box[0]), int(box[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 1)
+    cv2.imshow('dect_img', img)
+
+
+
+import pyrealsense2 as rs
+import numpy as np
+import cv2
+import random
+import torch
+import time
+
+# model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
+#
+model = torch.hub.load('ultralytics/yolov5', 'yolov5l6')
+model.conf = 0.5
+
+def get_mid_pos(aligned_depth_frame,box):
+    mid_pixel = [(box[0] + box[2])//2, (box[1] + box[3])//2] #确定索引深度的中心像素位置
+    # 注意mid_pixel是float，但是get_distance()的参数需要是int
+    [x, y] = [int(mid_pixel[0]), int(mid_pixel[1])]
+    depth_intrin = aligned_depth_frame.profile.as_video_stream_profile().intrinsics # 获取相机深度参数
+    dis = aligned_depth_frame.get_distance(x, y)        # 获取该像素点对应的深度
+    # print ('depth: ',dis)       # 深度单位是m
+    camera_coordinate = rs.rs2_deproject_pixel_to_point(depth_intrin, [x, y], dis)
+    # print ('camera_coordinate: ',camera_coordinate)
+    return camera_coordinate
+
+    
+def dectshow(org_img, boxs,aligned_depth_frame):
+    img = org_img.copy()
+    for box in boxs:
+        cv2.rectangle(img, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (0, 255, 0), 2)
+        point_3d = dist = get_mid_pos(aligned_depth_frame,box)
+        [x, y, z] = point_3d
+        # cv.putText 图片，添加的文字，左上角坐标，字体，字体大小，颜色，字体粗细
+        cv2.putText(img, box[-1] + ' (' + str(x)[:4] + ',' + str(y)[:4] + ',' + str(z)[:4] + ')',
+                    (int(box[0]), int(box[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 1)
+    cv2.imshow('dect_img', img)
+
+
+
+if __name__ == "__main__":
+    # Configure depth and color streams
+    pipeline = rs.pipeline()
+    config = rs.config()
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    # Start streaming
+    pipe_profile = pipeline.start(config)
+    try:
+        while True:
+            # # Wait for a coherent pair of frames: depth and color
+            # frames = pipeline.wait_for_frames()
+            # depth_frame = frames.get_depth_frame()
+            # color_frame = frames.get_color_frame()
+            # if not depth_frame or not color_frame:
+            #     continue
+            # # Convert images to numpy arrays
+
+            # depth_image = np.asanyarray(depth_frame.get_data())
+
+            # color_image = np.asanyarray(color_frame.get_data())
+            # Depth scale - units of the values inside a depth frame, i.e how to convert the value to units of 1 meter
+            # 获取深度传感器的深度标尺（参见rs - align示例进行说明）
+            depth_sensor = pipe_profile.get_device().first_depth_sensor()
+            depth_scale = depth_sensor.get_depth_scale()
+            # print("Depth Scale is: ", depth_scale)      # ('Depth Scale is: ', 0.0010000000474974513)
+            
+            # 创建对齐对象与color流对齐
+            # align_to 是计划对齐深度帧的流类型
+            align_to = rs.stream.color
+            # rs.align 执行深度帧与其他帧的对齐
+            align = rs.align(align_to)
+
+            ''' 
+            获取图像帧与相机参数
+            '''
+            # 等待获取图像帧，获取颜色和深度的框架集
+            frames = pipeline.wait_for_frames()         # frames.get_depth_frame（）是640x360深度图像
+            # 获取对齐帧，将深度框与颜色框对齐
+            aligned_frames = align.process(frames)
+            # 获取对齐帧中的的depth帧
+            aligned_depth_frame = aligned_frames.get_depth_frame() # aligned_depth_frame是640x480深度图像
+            # 获取对齐帧中的的color帧
+            aligned_color_frame = aligned_frames.get_color_frame()
+
+            # 将images转为numpy arrays
+            # RGB图
+            color_image = np.asanyarray(aligned_color_frame.get_data())
+            # 深度图（默认16位）
+            depth_image = np.asanyarray(aligned_depth_frame.get_data())
+
+            results = model(color_image)
+            boxs= results.pandas().xyxy[0].values
+            #boxs = np.load('temp.npy',allow_pickle=True)
+            dectshow(color_image, boxs, aligned_depth_frame)
+
+            # Apply colormap on depth image (image must be converted to 8-bit per pixel first)
+            depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
+            # Stack both images horizontally
+            images = np.hstack((color_image, depth_colormap))
+            # Show images
+            cv2.namedWindow('RealSense', cv2.WINDOW_AUTOSIZE)
+            cv2.imshow('RealSense', images)
+            key = cv2.waitKey(1)
+            # Press esc or 'q' to close the image window
+            if key & 0xFF == ord('q') or key == 27:
+                cv2.destroyAllWindows()
+                break
+    finally:
+        # Stop streaming
+        pipeline.stop()
+
+
